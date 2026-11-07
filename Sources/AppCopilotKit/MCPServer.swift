@@ -127,6 +127,7 @@ public final class MCPServer {
 
     /// Start listening for MCP connections.
     public func start() throws {
+        guard listener == nil else { return }
         // Snapshot MainActor-isolated state for use on httpQueue
         _snapshotName = name
         _snapshotVersion = version
@@ -561,8 +562,10 @@ public final class MCPServer {
         let cleaned = relativePath.replacingOccurrences(of: "..", with: "")
         let fileURL = root.appendingPathComponent(cleaned)
 
-        // Verify the resolved path is still under root
-        guard fileURL.standardizedFileURL.path.hasPrefix(root.standardizedFileURL.path) else {
+        // Reject path siblings and symlinks escaping the configured root.
+        let rootPath = root.resolvingSymlinksInPath().standardizedFileURL.path
+        let resolvedPath = fileURL.resolvingSymlinksInPath().standardizedFileURL.path
+        guard resolvedPath.hasPrefix(rootPath + "/") else {
             sendHTTP(connection: connection, status: 403, body: "Forbidden".data(using: .utf8))
             return
         }

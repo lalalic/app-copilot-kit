@@ -9,7 +9,7 @@ An open Swift Package for **on-device iPhone app UI automation and live product 
 
 ## Install in Xcode
 
-**File → Add Package Dependencies** → `https://github.com/lalalic/app-copilot-kit` → select release `0.1.0` or later → add `AppCopilotKit` to the iOS app target. Minimum supported iOS: **17**.
+**File → Add Package Dependencies** → `https://github.com/lalalic/app-copilot-kit` → select release `0.1.1` or later → add `AppCopilotKit` to the iOS app target. Minimum supported iOS: **17**.
 
 ### SwiftUI app (development/demo build)
 

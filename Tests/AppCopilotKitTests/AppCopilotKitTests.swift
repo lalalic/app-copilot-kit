@@ -20,6 +20,7 @@ final class AppCopilotKitTests: XCTestCase {
             return value
         }])
         try server.start()
+        try server.start() // SwiftUI .task/onAppear can run more than once.
         defer { server.stop() }
         for _ in 0..<40 where !server.isRunning {
             try await Task.sleep(nanoseconds: 50_000_000)
