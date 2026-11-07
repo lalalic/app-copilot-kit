@@ -62,6 +62,7 @@ public final class AccessibilityScanner {
 
     /// Lookup by ref to UIView
     private var refToView: [String: UIView] = [:]
+    private var visitedViews = Set<ObjectIdentifier>()
 
     public init() {}
 
@@ -74,6 +75,7 @@ public final class AccessibilityScanner {
         elements.removeAll()
         refToElement.removeAll()
         refToView.removeAll()
+        visitedViews.removeAll()
 
         guard let window = Self.keyWindow else {
             return "Error: no active window"
@@ -218,6 +220,9 @@ public final class AccessibilityScanner {
     // MARK: - View Walking
 
     private func scanViewTree(_ view: UIView, index: inout Int, depth: Int, lines: inout [String]) {
+        // UIKit's native accessibility tree and real subview tree overlap. Walk
+        // both, but never visit a real UIView twice.
+        guard visitedViews.insert(ObjectIdentifier(view)).inserted else { return }
         // Skip hidden/transparent views
         guard !view.isHidden, view.alpha > 0 else { return }
 
@@ -269,21 +274,18 @@ public final class AccessibilityScanner {
             lines.append("\(indent)\(containerName)")
         }
 
-        // Check for virtual accessibility children (SwiftUI, custom containers)
-        let axChildren = collectAccessibilityChildren(view)
-        if !axChildren.isEmpty {
-            for child in axChildren {
-                if let childView = child as? UIView {
-                    scanViewTree(childView, index: &index, depth: depth + 1, lines: &lines)
-                } else if let childObj = child as? NSObject {
-                    scanAccessibilityObject(childObj, parentView: view, index: &index, depth: depth + 1, lines: &lines)
-                }
+        // SwiftUI's accessibilityElements can contain only a partial subtree
+        // (or frame-less wrappers). Never skip the real UIKit subview tree
+        // just because it reports a virtual accessibility child.
+        for child in collectAccessibilityChildren(view) {
+            if let childView = child as? UIView {
+                scanViewTree(childView, index: &index, depth: depth + 1, lines: &lines)
+            } else if let childObj = child as? NSObject {
+                scanAccessibilityObject(childObj, parentView: view, index: &index, depth: depth + 1, lines: &lines)
             }
-        } else if !view.isAccessibilityElement || !view.accessibilityTraits.contains(.tabBar) {
-            // Recurse into subviews only if no accessibility children found
-            for subview in view.subviews {
-                scanViewTree(subview, index: &index, depth: depth + 1, lines: &lines)
-            }
+        }
+        for subview in view.subviews {
+            scanViewTree(subview, index: &index, depth: depth + 1, lines: &lines)
         }
     }
 
@@ -308,7 +310,7 @@ public final class AccessibilityScanner {
     /// Scan a non-UIView accessibility object (SwiftUI elements, UIAccessibilityElement).
     private func scanAccessibilityObject(_ ax: NSObject, parentView: UIView, index: inout Int, depth: Int, lines: inout [String]) {
         let frame = ax.accessibilityFrame
-        guard frame.width > 0, frame.height > 0 else { return }
+        let validFrame = frame.width > 0 && frame.height > 0
 
         let traits = ax.accessibilityTraits
         let label = ax.accessibilityLabel ?? ""
@@ -317,7 +319,7 @@ public final class AccessibilityScanner {
         let hasInteractiveTrait = traits.contains(.button) || traits.contains(.link) ||
             traits.contains(.searchField) || traits.contains(.adjustable)
 
-        if hasInteractiveTrait || (ax.isAccessibilityElement && !label.isEmpty) {
+        if validFrame && (hasInteractiveTrait || (ax.isAccessibilityElement && !label.isEmpty)) {
             let ref = "r\(index)"
             let kind: String
             if traits.contains(.button) { kind = "button" }

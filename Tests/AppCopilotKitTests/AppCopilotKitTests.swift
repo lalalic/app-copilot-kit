@@ -52,6 +52,39 @@ final class AppCopilotKitTests: XCTestCase {
     }
 
     @MainActor
+    func testAuthenticationRequiredForToolCalls() async throws {
+        let server = MCPServer(name: "auth-test", port: 19228)
+        server.requireBearerToken(String(repeating: "z", count: 48))
+        server.register(tools: [ToolDefinition(name: "fixture.echo") { _ in "secret" }])
+        try server.start()
+        defer { server.stop() }
+        for _ in 0..<40 where !server.isRunning {
+            try await Task.sleep(nanoseconds: 50_000_000)
+        }
+        XCTAssertTrue(server.isRunning)
+        func response(_ token: String?) async throws -> (Int, String) {
+            var request = URLRequest(url: URL(string: "http://127.0.0.1:19228/mcp")!)
+            request.httpMethod = "POST"
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            if let token { request.setValue("Bearer " + token, forHTTPHeaderField: "Authorization") }
+            request.httpBody = try JSONSerialization.data(withJSONObject: [
+                "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                "params": ["name": "fixture.echo", "arguments": [:] as [String: Any]]
+            ])
+            let (data, http) = try await URLSession.shared.data(for: request)
+            return ((http as? HTTPURLResponse)?.statusCode ?? 0, String(decoding: data, as: UTF8.self))
+        }
+        let denied = try await response(nil)
+        XCTAssertEqual(denied.0, 403)
+        XCTAssertFalse(denied.1.contains("secret"))
+        let wrong = try await response(String(repeating: "x", count: 48))
+        XCTAssertEqual(wrong.0, 403)
+        let allowed = try await response(String(repeating: "z", count: 48))
+        XCTAssertEqual(allowed.0, 200)
+        XCTAssertTrue(allowed.1.contains("secret"))
+    }
+
+    @MainActor
     func testRegisterTools() throws {
         let server = MCPServer(name: "fixture", port: 9229)
         server.register(tools: [ToolDefinition(name: "fixture.echo", description: "Echo") { _ in "ok" }])

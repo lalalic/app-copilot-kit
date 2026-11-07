@@ -44,12 +44,22 @@ public final class MCPServer {
     nonisolated(unsafe) private var _snapshotTools: [[String: Any]] = []
     nonisolated(unsafe) private var _snapshotHandlers: [String: ToolHandler] = [:]
     nonisolated(unsafe) private var _snapshotToolNames: [String] = []
+    // Configure before start(). A per-run bearer token limits remote UI
+    // automation to authorized clients on the development network.
+    nonisolated(unsafe) private var _bearerToken: String?
+
+    public func requireBearerToken(_ token: String) {
+        precondition(listener == nil, "Configure MCP authentication before start()")
+        precondition(token.utf8.count >= 32, "Use a strong random bearer token")
+        _bearerToken = token
+    }
 
     /// Whether the server is currently listening.
     @Published public private(set) var isRunning = false
 
     /// Log callback for debugging.
     public var onLog: ((String) -> Void)?
+    public var onListenerState: ((String) -> Void)?
 
     /// Called for every HTTP request line (e.g. "POST /mcp") — safe to call from the network queue.
     public nonisolated(unsafe) var onRequest: ((String) -> Void)?
@@ -145,6 +155,7 @@ public final class MCPServer {
         listener.stateUpdateHandler = { [weak self] state in
             Task { @MainActor in
                 guard let self else { return }
+                self.onListenerState?(String(describing: state))
                 switch state {
                 case .ready:
                     self.isRunning = true
@@ -283,6 +294,19 @@ public final class MCPServer {
         }
 
         if let onRequest { onRequest("\(method) \(path)") }
+
+        if method == "POST" && path == "/mcp", let token = _bearerToken {
+            let authorized = lines.dropFirst().contains { line in
+                let header = String(line).trimmingCharacters(in: .whitespaces)
+                guard header.lowercased().hasPrefix("authorization: bearer ") else { return false }
+                return String(header.dropFirst("authorization: bearer ".count)) == token
+            }
+            guard authorized else {
+                sendHTTP(connection: connection, status: 403,
+                         body: "Forbidden".data(using: .utf8))
+                return
+            }
+        }
 
         // Extract body
         var body: Data?
