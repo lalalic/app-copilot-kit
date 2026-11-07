@@ -2,14 +2,14 @@
 
 An open Swift Package for **on-device iPhone app UI automation and live product demonstrations over MCP**. Extracted from [Neox](https://github.com/lalalic/neox). No third-party runtime dependencies.
 
-- `agent.pilot`: `snapshot`, `tap`, `tap_xy`, `type`, `swipe`, `long_press`, `find`, `scroll_to`, `pick`, `screenshot` (MCP image block).
+- `agent.pilot`: accessibility-first snapshots with an on-device Vision text-coordinate fallback for SwiftUI views that expose no in-process accessibility elements; `snapshot`, `tap`, `tap_xy`, `type`, `swipe`, `long_press`, `find`, `scroll_to`, `pick`, `screenshot` (MCP image block).
 - `agent.demo`: `step`, `spotlight`, `annotate`, `caption`, `say`, `cursor`, `highlight`, `clear`, `pause`, `resume`, `wait`, `start_recording`, `stop_recording`.
 - Built-in MCP Streamable HTTP server using Network.framework (JSON-RPC `initialize`, `tools/list`, `tools/call`, `ping`), with optional Bonjour `_mcp._tcp` announcement.
 - Shared `ToolDefinition` / `JSONValue` model supports registration of app-specific tools on the same server.
 
 ## Install in Xcode
 
-**File → Add Package Dependencies** → `https://github.com/lalalic/app-copilot-kit` → select release `0.2.0` or later → add `AppCopilotKit` to the iOS app target. Minimum supported iOS: **17**.
+**File → Add Package Dependencies** → `https://github.com/lalalic/app-copilot-kit` → select release `0.2.1` or later → add `AppCopilotKit` to the iOS app target. Minimum supported iOS: **17**.
 
 ### SwiftUI app (development/demo build)
 

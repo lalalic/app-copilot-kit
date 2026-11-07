@@ -48,6 +48,7 @@ public struct AppElement: Sendable {
 
 #if os(iOS)
 import UIKit
+import Vision
 
 /// Scans the iOS view hierarchy using accessibility APIs to find interactive elements.
 /// Assigns sequential refs (r0, r1, ...) for agent interaction.
@@ -94,6 +95,15 @@ public final class AccessibilityScanner {
         // Hit-test probe to discover SwiftUI-rendered elements not in the UIView tree
         probeHitTest(window, index: &idx, depth: 1, lines: &lines)
 
+        // SwiftUI on some iOS builds exposes no UIKit accessibility children
+        // to in-process callers, even though XCTest and VoiceOver can inspect
+        // the rendered interface. Use on-device Vision text boxes as a
+        // clearly labeled visual fallback rather than returning an empty
+        // tree. The agent can still use tap_xy on those coordinates.
+        if elements.isEmpty {
+            appendVisualText(window, index: &idx, lines: &lines)
+        }
+
         lines.append("---")
         lines.append("\(elements.count) interactive elements")
 
@@ -108,6 +118,54 @@ public final class AccessibilityScanner {
     /// Get UIView by ref.
     public func view(for ref: String) -> UIView? {
         refToView[ref]
+    }
+
+    // MARK: - On-device visual fallback
+
+    /// Fallback labels are image-derived text coordinates, not guaranteed
+    /// buttons. The MCP result calls them visualText so callers can confirm
+    /// effects with a fresh screenshot or snapshot after interacting.
+    private func appendVisualText(_ window: UIWindow, index: inout Int, lines: inout [String]) {
+        let renderer = UIGraphicsImageRenderer(bounds: window.bounds)
+        let image = renderer.image { context in
+            if !window.drawHierarchy(in: window.bounds, afterScreenUpdates: true) {
+                window.layer.render(in: context.cgContext)
+            }
+        }
+        guard let cgImage = image.cgImage else { return }
+        let request = VNRecognizeTextRequest()
+        request.recognitionLevel = .accurate
+        request.usesLanguageCorrection = false
+        do {
+            try VNImageRequestHandler(cgImage: cgImage, options: [:]).perform([request])
+        } catch {
+            lines.append("[Visual text unavailable]")
+            return
+        }
+        let bounds = window.bounds
+        for observation in (request.results ?? []).prefix(80) {
+            guard let best = observation.topCandidates(1).first else { continue }
+            let label = best.string.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !label.isEmpty else { continue }
+            let region = observation.boundingBox
+            let frame = CGRect(
+                x: region.minX * bounds.width,
+                y: (1 - region.maxY) * bounds.height,
+                width: region.width * bounds.width,
+                height: region.height * bounds.height
+            )
+            guard frame.width > 0, frame.height > 0 else { continue }
+            let ref = "r\(index)"
+            let element = AppElement(ref: ref, kind: "visualText", label: label,
+                                     value: nil, isEnabled: true, isSelected: false,
+                                     frame: frame, traits: "visual-only")
+            elements.append(element)
+            refToElement[ref] = element
+            refToView[ref] = window
+            index += 1
+            lines.append("  \(element.description)")
+        }
+        if !elements.isEmpty { lines.append("[Visual text fallback: confirm taps with a fresh snapshot]") }
     }
 
     // MARK: - Hit-Test Probing

@@ -128,6 +128,14 @@ public final class AppAgentToolProvider {
             guard case .string(let ref) = args["ref"] else {
                 return "Error: 'ref' required for tap"
             }
+            // Visual OCR refs denote coordinates, not accessibility actions.
+            // Route through the coordinate hit-test engine and verify the
+            // resulting UI state before treating the action as successful.
+            if let element = scanner.element(for: ref), element.kind == "visualText" {
+                let result = await engine.tapXY(x: Double(element.frame.midX),
+                                                y: Double(element.frame.midY))
+                return "Visual text \(ref) \(element.label): \(result)"
+            }
             return engine.tap(ref: ref)
 
         case "tap_xy":
