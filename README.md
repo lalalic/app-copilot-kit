@@ -9,7 +9,7 @@ An open Swift Package for **on-device iPhone app UI automation and live product 
 
 ## Install in Xcode
 
-**File → Add Package Dependencies** → `https://github.com/lalalic/app-copilot-kit` → select release `0.2.1` or later → add `AppCopilotKit` to the iOS app target. Minimum supported iOS: **17**.
+**File → Add Package Dependencies** → `https://github.com/lalalic/app-copilot-kit` → select release `0.2.2` or later → add `AppCopilotKit` to the iOS app target. Minimum supported iOS: **17**.
 
 ### SwiftUI app (development/demo build)
 
@@ -35,6 +35,37 @@ struct MyApp: App {
 }
 ```
 
+### Reliable SwiftUI interactions
+
+In-process accessibility inspection cannot always invoke a SwiftUI `Button` closure.
+Register app-owned actions on trusted development/demo builds:
+
+```swift
+Button("Open Settings") { showSettings = true }
+    .appCopilotAction(id: "settings.open", label: "Open Settings") {
+        showSettings = true
+    }
+```
+
+The package keeps a live button frame and handler together. The `snapshot`
+reports a stable `[action:settings.open]` identifier and ephemeral `rN` ref.
+Both `tap(ref:)` and `tap_xy` dispatch the same registered handler. Refs are
+valid **only until the next snapshot** and are never reused across scans.
+Hidden, disabled or moved actions return an explicit error; the package never
+pretends to deliver touches by setting a gesture recognizer's private state.
+
+SwiftUI `TabView` owners can register state changes using the public UIKit
+tab bar geometry:
+
+```swift
+AppCopilotActionRegistry.shared.registerTab(
+    id: "tab.settings", label: "Settings", index: 2
+) { selectedTab = .settings }
+```
+
+Unregister the id when the owning view disappears. `registerTab` requires a
+native `UITabBar`. Existing UIKit and WebKit public dispatch is unchanged.
+
 For trusted remote automation, configure a strong per-run secret with `copilot.server.requireBearerToken(token)` **before** `start()` and pass `Authorization: Bearer <token>` in every MCP request. Avoid unauthenticated listeners even on shared Wi-Fi.
 
 `AppCopilotSession` registers both tools and owns the listener. Existing MCP hosts can register `AppAgentToolProvider().tools` into their own server instead of creating another listener; attach `DemoOverlayView` or `.appCopilotOverlay(using:)` to the app scene for visible demos.
@@ -47,7 +78,52 @@ Once the app is in the **foreground** on the iPhone and its listener is running,
 {"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"agent.pilot","arguments":{"command":"snapshot"}}}
 ```
 
-Then use the returned `r0`, `r1`, … refs in `tap`, `type` or `scroll_to` and capture new snapshots/screenshots for assertions. For a demo, call `agent.demo` with `step`, `spotlight`, `say`, etc. and keep `.appCopilotOverlay` attached.
+Then use the returned `r0`, `r1`, … refs in `tap`, `type` or `scroll_to` and capture new snapshots/screenshots for assertions.
+
+### Reliable SwiftUI actions (0.2.2+)
+
+SwiftUI often renders buttons as virtual accessibility children of a single hosting view.
+The in-process scanner can observe those labels without access to their underlying
+SwiftUI closure. AppCopilotKit **never fakes** a `UITouch` or forces gesture
+recognizer state with KVC. For controls where a public UIKit accessibility action
+cannot be delivered, `tap` and `tap_xy` return a clear `Error:` instead of
+pretending a touch occurred.
+
+Opt a SwiftUI button into the **public app-owned action bridge**:
+
+```swift
+Button("Continue") { proceed() }
+    .appCopilotAction(id: "onboarding.continue", label: "Continue") {
+        proceed()
+    }
+```
+
+The stable ID and live button frame are included in `agent.pilot snapshot`.
+Both ref and coordinate calls invoke the registered closure on the main actor.
+The bridge reads SwiftUI's `isEnabled` environment (including `.disabled()`),
+clips registered frames to visible scroll/ancestor regions, and rejects
+moved/stale refs. An explicit `isEnabled:` parameter can further restrict a
+control but cannot override the SwiftUI disabled environment.
+Use `isVisible:` when a custom container keeps inactive pages in the view tree.
+The button's normal user interaction continues unchanged.
+
+For app-owned navigation that has no individual SwiftUI button view, such as
+a native `TabView` tab item, register an explicit state transition when its
+owner appears and unregister it on disappear:
+
+```swift
+AppCopilotActionRegistry.shared.registerTab(
+    id: "app.tab.search", label: "Search", index: 1
+) { selectedTab = .search }
+// On the owning view's disappearance:
+AppCopilotActionRegistry.shared.unregister(id: "app.tab.search")
+```
+
+Tab item frames are resolved using the public `UITabBar` API; registration does
+not mutate the tab bar or fake touches. If an app does not opt in, only public
+UIKit accessibility/control actions and compatible WebKit DOM actions are
+available. Always verify the resulting screen with a fresh snapshot or screenshot.
+ For a demo, call `agent.demo` with `step`, `spotlight`, `say`, etc. and keep `.appCopilotOverlay` attached.
 
 If you need LAN access, include `NSLocalNetworkUsageDescription` in the app's Info.plist and a Bonjour-services declaration (`_mcp._tcp`) when advertising. Enable local networking on the device. iOS may suspend network listeners in the background; keep the app foregrounded during the run and restart on foreground transitions if needed.
 

@@ -33,7 +33,8 @@ public final class AppAgentToolProvider {
 
     Sub-commands:
     - `snapshot` — Scan the screen for interactive elements. Returns tree with refs r0, r1, r2...
-    - `tap` — Tap an element. Params: `ref` (required).
+    - `tap` — Dispatch an action by fresh snapshot ref. Params: `ref` (required).
+    - `tap_xy` — Dispatch an action at coordinates. Params: `x`, `y`.
     - `type` — Type into a text field. Params: `ref` (required), `text` (required), `clear` (optional, default true).
     - `swipe` — Swipe on screen or element. Params: `direction` (up/down/left/right), `ref` (optional).
     - `long_press` — Long-press an element. Params: `ref` (required), `duration` (optional, seconds).
@@ -42,7 +43,8 @@ public final class AppAgentToolProvider {
     - `pick` — Select a value in a picker, date picker, or segmented control. Params: `ref` (required), `value` (required), `component` (optional, picker column index, default 0).
     - `screenshot` — Take a screenshot. Returns base64 PNG.
 
-    Workflow: snapshot → read refs → tap/type/swipe → snapshot again after interactions.
+    Workflow: snapshot → read refs → tap/type/swipe → snapshot again.
+    Refs are invalid after a new snapshot. A tap that has no public dispatch returns an error; never assume a screen transition without a fresh snapshot.
     """
 
     // MARK: - Tools (pilot + demo)

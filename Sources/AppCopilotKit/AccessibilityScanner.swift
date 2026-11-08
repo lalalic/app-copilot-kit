@@ -63,9 +63,18 @@ public final class AccessibilityScanner {
 
     /// Lookup by ref to UIView
     private var refToView: [String: UIView] = [:]
+    private var refToActionID: [String: String] = [:]
+    private var refToAccessibilityObject: [String: NSObject] = [:]
+    /// Never reuse a ref across snapshots: a stale ref must not alias a new control.
+    private var nextRefIndex = 0
     private var visitedViews = Set<ObjectIdentifier>()
 
-    public init() {}
+    private weak var scopedWindow: UIWindow?
+
+    /// Optional scoped window allows deterministic tests and multi-scene hosts.
+    public init(window: UIWindow? = nil) { scopedWindow = window }
+
+    public var activeWindow: UIWindow? { scopedWindow ?? Self.keyWindow }
 
     // MARK: - Scan
 
@@ -76,13 +85,15 @@ public final class AccessibilityScanner {
         elements.removeAll()
         refToElement.removeAll()
         refToView.removeAll()
+        refToActionID.removeAll()
+        refToAccessibilityObject.removeAll()
         visitedViews.removeAll()
 
-        guard let window = Self.keyWindow else {
+        guard let window = activeWindow else {
             return "Error: no active window"
         }
 
-        var idx = 0
+        var idx = nextRefIndex
         var lines: [String] = []
 
         let appName = Bundle.main.infoDictionary?["CFBundleDisplayName"] as? String
@@ -95,6 +106,8 @@ public final class AccessibilityScanner {
         // Hit-test probe to discover SwiftUI-rendered elements not in the UIView tree
         probeHitTest(window, index: &idx, depth: 1, lines: &lines)
 
+        appendRegisteredActions(in: window, index: &idx, lines: &lines)
+
         // SwiftUI on some iOS builds exposes no UIKit accessibility children
         // to in-process callers, even though XCTest and VoiceOver can inspect
         // the rendered interface. Use on-device Vision text boxes as a
@@ -104,6 +117,7 @@ public final class AccessibilityScanner {
             appendVisualText(window, index: &idx, lines: &lines)
         }
 
+        nextRefIndex = idx
         lines.append("---")
         lines.append("\(elements.count) interactive elements")
 
@@ -118,6 +132,25 @@ public final class AccessibilityScanner {
     /// Get UIView by ref.
     public func view(for ref: String) -> UIView? {
         refToView[ref]
+    }
+
+    public func actionID(for ref: String) -> String? { refToActionID[ref] }
+    public func accessibilityObject(for ref: String) -> NSObject? { refToAccessibilityObject[ref] }
+
+    private func appendRegisteredActions(in window: UIWindow, index: inout Int, lines: inout [String]) {
+        for action in AppCopilotActionRegistry.shared.visibleActions(in: window) {
+            let ref = "r\(index)"
+            let element = AppElement(ref: ref, kind: action.kind, label: action.label,
+                                     value: nil, isEnabled: action.isEnabled,
+                                     isSelected: false, frame: action.frame,
+                                     traits: "registered-action")
+            elements.append(element)
+            refToElement[ref] = element
+            refToView[ref] = window
+            refToActionID[ref] = action.id
+            lines.append("  \(element.description) [action:\(action.id)]")
+            index += 1
+        }
     }
 
     // MARK: - On-device visual fallback
@@ -285,9 +318,10 @@ public final class AccessibilityScanner {
         guard !view.isHidden, view.alpha > 0 else { return }
 
         // Use screen-coordinate frame: prefer accessibilityFrame, fall back to converted bounds
-        var frame = view.accessibilityFrame
+        let accessibilityFrame = view.accessibilityFrame
+        var frame = activeWindow?.convert(accessibilityFrame, from: nil) ?? accessibilityFrame
         if frame.width <= 0 || frame.height <= 0 {
-            frame = view.convert(view.bounds, to: nil)
+            frame = view.convert(view.bounds, to: activeWindow)
         }
         // Skip zero-size views
         guard frame.width > 0, frame.height > 0 else {
@@ -367,7 +401,8 @@ public final class AccessibilityScanner {
 
     /// Scan a non-UIView accessibility object (SwiftUI elements, UIAccessibilityElement).
     private func scanAccessibilityObject(_ ax: NSObject, parentView: UIView, index: inout Int, depth: Int, lines: inout [String]) {
-        let frame = ax.accessibilityFrame
+        let accessibilityFrame = ax.accessibilityFrame
+        let frame = activeWindow?.convert(accessibilityFrame, from: nil) ?? accessibilityFrame
         let validFrame = frame.width > 0 && frame.height > 0
 
         let traits = ax.accessibilityTraits
@@ -395,7 +430,7 @@ public final class AccessibilityScanner {
                 kind: kind,
                 label: label,
                 value: value,
-                isEnabled: true,
+                isEnabled: !traits.contains(.notEnabled),
                 isSelected: traits.contains(.selected),
                 frame: frame,
                 traits: traitsDescription(traits)
@@ -404,6 +439,7 @@ public final class AccessibilityScanner {
             elements.append(element)
             refToElement[ref] = element
             refToView[ref] = parentView // map to parent for coordinate-based interaction
+            refToAccessibilityObject[ref] = ax
             index += 1
 
             lines.append("\(indent)\(element.description)")

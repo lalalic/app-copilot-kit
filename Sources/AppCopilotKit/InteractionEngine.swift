@@ -26,26 +26,59 @@ public final class InteractionEngine {
             return "Error: element '\(ref)' is disabled"
         }
 
-        // Method 1: accessibilityActivate() — official API for triggering action
-        if view.accessibilityActivate() {
-            return "Tapped \(ref) [\(element.kind)] \"\(element.label)\""
+        guard let window = scanner.activeWindow, (view === window || view.window === window),
+              element.frame.intersects(window.bounds) else {
+            return "Error: stale or offscreen ref '\(ref)'; run snapshot again"
+        }
+        if let id = scanner.actionID(for: ref) {
+            guard AppCopilotActionRegistry.shared.invoke(
+                id: id, in: window, expectedFrame: element.frame
+            ) else {
+                return "Error: registered action '\(id)' is stale or disabled; run snapshot again"
+            }
+            return "Dispatched registered action '\(id)' [\(element.label)]"
         }
 
-        // Method 2: For UIControl subclasses, send touch events. UISwitch is
-        // special: SwiftUI Toggle hosts one, and its binding listens to
-        // .valueChanged — setOn + valueChanged is the only reliable trigger.
-        if let switchControl = view as? UISwitch {
-            switchControl.setOn(!switchControl.isOn, animated: true)
-            switchControl.sendActions(for: .valueChanged)
-            return "Toggled \(ref) [\(element.kind)] \"\(element.label)\" → \(switchControl.isOn)"
+        // The scanner retained the exact virtual accessibility child. Never
+        // activate its hosting view instead: SwiftUI hosts many distinct buttons.
+        if let ax = scanner.accessibilityObject(for: ref) {
+            let fresh = window.convert(ax.accessibilityFrame, from: nil)
+            let old = CGPoint(x: element.frame.midX, y: element.frame.midY)
+            let now = CGPoint(x: fresh.midX, y: fresh.midY)
+            guard fresh.intersects(window.bounds),
+                  hypot(old.x - now.x, old.y - now.y) <= 12 else {
+                return "Error: stale accessibility element '\(ref)'; run snapshot again"
+            }
+            guard ax.accessibilityActivate() else {
+                return "Error: accessibility element '\(ref)' did not activate; register an app-owned action"
+            }
+            return "Activated \(ref) [\(element.kind)] \(element.label)"
         }
+
+        // Native controls must have a public target/action to claim delivery.
+        // accessibilityActivate() can return true for an inert UIButton, so
+        // do not treat that return value as proof of a wired UIControl handler.
+        let center = CGPoint(x: element.frame.midX, y: element.frame.midY)
         if let control = view as? UIControl {
-            control.sendActions(for: .touchUpInside)
-            return "Tapped \(ref) [\(element.kind)] \"\(element.label)\""
+            if let segmented = control as? UISegmentedControl {
+                return selectSegment(segmented, at: center, in: window)
+            }
+            if let switchControl = control as? UISwitch, dispatchToggle(switchControl) {
+                return "Toggled \(ref) [\(element.kind)] \"\(element.label)\" → \(switchControl.isOn)"
+            }
+            if dispatchPrimary(control) {
+                return "Tapped \(ref) [\(element.kind)] \"\(element.label)\""
+            }
+            return "Error: UIControl '\(ref)' has no dispatchable public action"
+        }
+
+        // Non-UIControl UIKit and accessibility objects can expose an explicit
+        // activation through the official accessibilityActivate() API.
+        if view.isAccessibilityElement && view.accessibilityActivate() {
+            return "Activated \(ref) [\(element.kind)] \"\(element.label)\""
         }
 
         // Method 3: Walk accessibility elements on the view (SwiftUI hosting views)
-        let center = CGPoint(x: element.frame.midX, y: element.frame.midY)
         if activateAccessibilityElement(in: view, at: center) {
             return "Tapped \(ref) [\(element.kind)] \"\(element.label)\" (via a11y element)"
         }
@@ -56,17 +89,18 @@ public final class InteractionEngine {
             if let segmented = hitView as? UISegmentedControl {
                 return selectSegment(segmented, at: center, in: window)
             }
-            if let switchControl = hitView as? UISwitch {
-                switchControl.setOn(!switchControl.isOn, animated: true)
-                switchControl.sendActions(for: .valueChanged)
+            if let switchControl = hitView as? UISwitch,
+               dispatchToggle(switchControl) {
                 return "Toggled \(ref) [\(element.kind)] \"\(element.label)\" → \(switchControl.isOn) (via hitTest)"
             }
-            if let control = hitView as? UIControl {
-                control.sendActions(for: .touchUpInside)
+            if let control = hitView as? UIControl, dispatchPrimary(control) {
                 return "Tapped \(ref) [\(element.kind)] \"\(element.label)\" (via hitTest)"
             }
+            if hitView is UIControl {
+                return "Error: no dispatchable UIControl handler at \(ref)"
+            }
             if hitView.accessibilityActivate() {
-                return "Tapped \(ref) [\(element.kind)] \"\(element.label)\" (via hitTest)"
+                return "Activated \(ref) [\(element.kind)] \"\(element.label)\" (via hitTest)"
             }
             // Try a11y elements on the hit-tested view too
             if activateAccessibilityElement(in: hitView, at: center) {
@@ -74,9 +108,7 @@ public final class InteractionEngine {
             }
         }
 
-        // Method 5: Gesture recognizer force-trigger
-        synthesizeTouch(at: center, in: view.window ?? Self.keyWindow!)
-        return "Warning: tapped \(ref) via synthesized touch — may not have triggered"
+        return "Error: no public action dispatch available for \(ref) [\(element.label)]; register a SwiftUI action"
     }
 
     // MARK: - Tap XY (coordinate-based)
@@ -84,11 +116,17 @@ public final class InteractionEngine {
     /// Tap at arbitrary screen coordinates. Essential for SwiftUI buttons
     /// which aren't individually discoverable as UIKit views.
     public func tapXY(x: Double, y: Double) async -> String {
-        guard let window = Self.keyWindow else {
+        guard let window = scanner.activeWindow else {
             return "Error: no active window found"
         }
 
         let point = CGPoint(x: x, y: y)
+        guard window.bounds.contains(point) else {
+            return "Error: coordinate outside active window"
+        }
+        if let result = AppCopilotActionRegistry.shared.invoke(at: point, in: window) {
+            return result
+        }
 
         // Hit-test to find the deepest view at these coordinates
         guard let hitView = window.hitTest(point, with: nil) else {
@@ -99,8 +137,13 @@ public final class InteractionEngine {
         if let segmented = hitView as? UISegmentedControl {
             return selectSegment(segmented, at: point, in: window)
         }
+        if let switchControl = hitView as? UISwitch, dispatchToggle(switchControl) {
+            return "Toggled (\(Int(x)), \(Int(y))) → UISwitch"
+        }
         if let control = hitView as? UIControl {
-            control.sendActions(for: .touchUpInside)
+            guard dispatchPrimary(control) else {
+                return "Error: no public UIControl action at (\(Int(x)), \(Int(y)))"
+            }
             return "Tapped (\(Int(x)), \(Int(y))) → UIControl [\(Swift.type(of: control))]"
         }
 
@@ -142,9 +185,32 @@ public final class InteractionEngine {
             ancestor = view.superview
         }
 
-        // Method 5: Synthesize full touch event sequence on the window
-        synthesizeTouch(at: point, in: window)
-        return "Warning: tapped (\(Int(x)), \(Int(y))) via synthesized touch — may not have triggered"
+        return "Error: no public action dispatch at (\(Int(x)), \(Int(y))); register a SwiftUI action"
+    }
+
+    /// UIControl.sendActions has no delivery result. Never report success
+    /// when no public target/action is registered for the chosen event.
+    private func dispatchPrimary(_ control: UIControl) -> Bool {
+        guard control.isEnabled else { return false }
+        let events = control.allControlEvents
+        let event: UIControl.Event
+        if events.contains(.touchUpInside) {
+            event = .touchUpInside
+        } else if events.contains(.primaryActionTriggered) {
+            event = .primaryActionTriggered
+        } else {
+            return false
+        }
+        control.sendActions(for: event)
+        return true
+    }
+
+    private func dispatchToggle(_ control: UISwitch) -> Bool {
+        guard control.isEnabled,
+              control.allControlEvents.contains(.valueChanged) else { return false }
+        control.setOn(!control.isOn, animated: true)
+        control.sendActions(for: .valueChanged)
+        return true
     }
 
     private func selectSegment(_ control: UISegmentedControl, at point: CGPoint, in window: UIWindow) -> String {
@@ -155,6 +221,9 @@ public final class InteractionEngine {
         let fraction = max(0, min(0.9999, position.x / control.bounds.width))
         let index = Int(fraction * CGFloat(control.numberOfSegments))
         guard control.isEnabledForSegment(at: index) else { return "Error: segment is disabled" }
+        guard control.allControlEvents.contains(.valueChanged) else {
+            return "Error: segmented control has no valueChanged handler"
+        }
         control.selectedSegmentIndex = index
         control.sendActions(for: .valueChanged)
         return "Selected segment \(index)"
@@ -170,7 +239,8 @@ public final class InteractionEngine {
         if let elements = view.accessibilityElements {
             for element in elements {
                 if let axElement = element as? NSObject {
-                    let frame = axElement.accessibilityFrame
+                    let screenFrame = axElement.accessibilityFrame
+                    let frame = scanner.activeWindow?.convert(screenFrame, from: nil) ?? screenFrame
                     if frame.contains(point) {
                         if axElement.accessibilityActivate() {
                             return true
@@ -185,7 +255,8 @@ public final class InteractionEngine {
         if count != NSNotFound && count > 0 {
             for i in 0..<count {
                 if let axElement = view.accessibilityElement(at: i) as? NSObject {
-                    let frame = axElement.accessibilityFrame
+                    let screenFrame = axElement.accessibilityFrame
+                    let frame = scanner.activeWindow?.convert(screenFrame, from: nil) ?? screenFrame
                     if frame.contains(point) {
                         if axElement.accessibilityActivate() {
                             return true
@@ -196,35 +267,6 @@ public final class InteractionEngine {
         }
 
         return false
-    }
-
-    /// Synthesize a touch-down → touch-up sequence at the given point.
-    private func synthesizeTouch(at point: CGPoint, in window: UIWindow) {
-        // Use UIKit's gesture recognizer system by creating simulated events
-        // via the undocumented but well-known UITouch/UIEvent pattern.
-        // Since we want to stay public-API-only, we use an alternative:
-        // find all gesture recognizers on the hit-tested view chain and
-        // trigger them via target/action if possible.
-        guard let hitView = window.hitTest(point, with: nil) else { return }
-
-        // Walk up the responder chain looking for gesture recognizers
-        var current: UIView? = hitView
-        while let view = current {
-            if let gestures = view.gestureRecognizers {
-                for gesture in gestures where gesture.isEnabled {
-                    if gesture is UITapGestureRecognizer {
-                        // Force-trigger by setting state (uses runtime)
-                        gesture.setValue(3, forKey: "state") // .ended = 3
-                        // Reset after a tick
-                        DispatchQueue.main.async {
-                            gesture.setValue(0, forKey: "state") // .possible = 0
-                        }
-                        return
-                    }
-                }
-            }
-            current = view.superview
-        }
     }
 
     // MARK: - Type
