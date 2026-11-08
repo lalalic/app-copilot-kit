@@ -9,7 +9,7 @@ An open Swift Package for **on-device iPhone app UI automation and live product 
 
 ## Install in Xcode
 
-**File → Add Package Dependencies** → `https://github.com/lalalic/app-copilot-kit` → select release `0.2.2` or later → add `AppCopilotKit` to the iOS app target. Minimum supported iOS: **17**.
+**File → Add Package Dependencies** → `https://github.com/lalalic/app-copilot-kit` → select release `0.2.3` or later → add `AppCopilotKit` to the iOS app target. Minimum supported iOS: **17**.
 
 ### SwiftUI app (development/demo build)
 
@@ -119,7 +119,10 @@ AppCopilotActionRegistry.shared.registerTab(
 AppCopilotActionRegistry.shared.unregister(id: "app.tab.search")
 ```
 
-Tab item frames are resolved using the public `UITabBar` API; registration does
+Tab item frames are resolved using the public `UITabBar` API; public
+`unregister(id:)` only removes programmatic registrations, while
+SwiftUI anchors manage their own scene-scoped registration lifetimes.
+Registration does
 not mutate the tab bar or fake touches. If an app does not opt in, only public
 UIKit accessibility/control actions and compatible WebKit DOM actions are
 available. Always verify the resulting screen with a fresh snapshot or screenshot.

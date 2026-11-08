@@ -64,7 +64,12 @@ public final class AppCopilotActionRegistry {
         )
     }
 
-    public func unregister(id: String) { entries.removeValue(forKey: id) }
+    /// Unregister only a programmatic action registered through the public
+    /// register/registerTab API. SwiftUI anchors with the same ID in other
+    /// scenes keep their separately owned registrations.
+    public func unregister(id: String) {
+        unregister(id: id, owner: Self.programmaticOwner)
+    }
 
     fileprivate func unregister(id: String, owner: UUID) {
         entries[id]?.removeValue(forKey: owner)

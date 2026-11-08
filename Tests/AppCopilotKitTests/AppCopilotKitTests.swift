@@ -174,6 +174,10 @@ final class AppCopilotInteractionTests: XCTestCase {
         XCTAssertEqual(calls, 1)
         XCTAssertTrue(engine.tap(ref: inertRef).hasPrefix("Error:"))
         XCTAssertEqual(calls, 1)
+        active.frame = CGRect(x: 250, y: 550, width: 120, height: 50)
+        XCTAssertTrue(engine.tap(ref: activeRef).hasPrefix("Error:"),
+                      "A moved UIKit button must not be dispatched using a stale ref")
+        XCTAssertEqual(calls, 1)
     }
 
     func testDisabledSwiftUIButtonCannotDispatch() {
@@ -235,6 +239,12 @@ final class AppCopilotInteractionTests: XCTestCase {
         XCTAssertTrue(AppCopilotActionRegistry.shared.invoke(id: "test.shared", in: second))
         XCTAssertEqual(firstCount, 1)
         XCTAssertEqual(secondCount, 1)
+        AppCopilotActionRegistry.shared.unregister(id: "test.shared")
+        XCTAssertTrue(AppCopilotActionRegistry.shared.invoke(id: "test.shared", in: first),
+                      "Programmatic unregister may not remove an anchor from another window")
+        XCTAssertTrue(AppCopilotActionRegistry.shared.invoke(id: "test.shared", in: second))
+        XCTAssertEqual(firstCount, 2)
+        XCTAssertEqual(secondCount, 2)
     }
 
     func testClippedSwiftUIActionNotExposed() {

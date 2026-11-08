@@ -55,6 +55,21 @@ public final class InteractionEngine {
             return "Activated \(ref) [\(element.kind)] \(element.label)"
         }
 
+        // Native UIKit controls can move or scroll between a snapshot and a
+        // tap. Revalidate their current screen frame, not only the old ref.
+        if let control = view as? UIControl {
+            let raw = control.accessibilityFrame
+            let liveFrame = raw.width > 0 && raw.height > 0
+                ? window.convert(raw, from: nil)
+                : control.convert(control.bounds, to: window)
+            let original = CGPoint(x: element.frame.midX, y: element.frame.midY)
+            let current = CGPoint(x: liveFrame.midX, y: liveFrame.midY)
+            guard liveFrame.intersects(window.bounds),
+                  hypot(original.x - current.x, original.y - current.y) <= 12 else {
+                return "Error: stale UIKit element '\(ref)'; run snapshot again"
+            }
+        }
+
         // Native controls must have a public target/action to claim delivery.
         // accessibilityActivate() can return true for an inert UIButton, so
         // do not treat that return value as proof of a wired UIControl handler.
